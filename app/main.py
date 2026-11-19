@@ -16,35 +16,26 @@ app = FastAPI(
 )
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get("/fixtures")
-def get_fixtures():
+def fixture_response(fixture):
     return {
-        "count": len(FIXTURES),
-        "fixtures": FIXTURES,
+        **fixture,
+        "filename": f'{fixture["clip_id"]}.mock',
+        "media_type": "unknown",
+        "created_at": None,
+        "is_demo": True,
     }
 
 
-@app.get("/reports/{report_id}", response_model=ReportResponse)
-def get_report(report_id: str, db: Session = Depends(get_db)):
-    # Check test fixtures first
-    for fixture in FIXTURES.values():
-        if fixture["report_id"] == report_id:
-            return fixture
-
-    # Then check database
-    report = db.get(models.Report, report_id)
-
-    if report is None:
-        raise HTTPException(status_code=404, detail="Report not found")
+def database_report_response(report, db):
+    clip = db.get(models.Clip, report.clip_id)
 
     return {
         "report_id": report.id,
         "clip_id": report.clip_id,
+        "filename": clip.filename if clip else "غير معروف",
+        "media_type": "unknown",
+        "created_at": report.created_at,
+        "is_demo": False,
         "job_status": report.job_status,
         "verdict": report.verdict,
         "authenticity_score": report.authenticity_score,
@@ -56,6 +47,86 @@ def get_report(report_id: str, db: Session = Depends(get_db)):
         "model_version": report.model_version,
         "error": report.error,
     }
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/fixtures")
+def get_fixtures():
+    fixtures = {
+        key: fixture_response(value)
+        for key, value in FIXTURES.items()
+    }
+    return {"count": len(fixtures), "fixtures": fixtures}
+
+
+@app.get("/reports", response_model=list[ReportResponse])
+def get_reports(db: Session = Depends(get_db)):
+    demo_ids = {item["report_id"] for item in FIXTURES.values()}
+
+    results = [
+        fixture_response(item)
+        for item in FIXTURES.values()
+    ]
+
+    reports = db.query(models.Report).all()
+
+    results.extend(
+        database_report_response(report, db)
+        for report in reports
+        if report.id not in demo_ids
+    )
+
+    return results
+
+
+@app.get("/stats")
+def get_stats(db: Session = Depends(get_db)):
+    demo_ids = {item["report_id"] for item in FIXTURES.values()}
+    reports = db.query(models.Report).all()
+
+    counts = {
+        "authentic": 0,
+        "suspicious": 0,
+        "inconclusive": 0,
+        "likely_fake": 0,
+    }
+
+    total = len(FIXTURES)
+
+    for item in FIXTURES.values():
+        if item["verdict"] in counts:
+            counts[item["verdict"]] += 1
+
+    for report in reports:
+        if report.id in demo_ids:
+            continue
+        total += 1
+        if report.verdict in counts:
+            counts[report.verdict] += 1
+
+    return {
+        "total": total,
+        **counts,
+        "weekly": [],
+    }
+
+
+@app.get("/reports/{report_id}", response_model=ReportResponse)
+def get_report(report_id: str, db: Session = Depends(get_db)):
+    for fixture in FIXTURES.values():
+        if fixture["report_id"] == report_id:
+            return fixture_response(fixture)
+
+    report = db.get(models.Report, report_id)
+
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    return database_report_response(report, db)
 
 
 @app.post("/feedback", status_code=201)

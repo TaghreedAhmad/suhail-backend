@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -25,6 +26,10 @@ class Segment(BaseModel):
 class ReportResponse(BaseModel):
     report_id: str
     clip_id: str | None = None
+    filename: str = "غير معروف"
+    media_type: Literal["image", "video", "audio", "unknown"] = "unknown"
+    created_at: datetime | None = None
+    is_demo: bool = False
 
     job_status: JobStatus
     verdict: Verdict | None = None
