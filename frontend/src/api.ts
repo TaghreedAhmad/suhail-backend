@@ -20,7 +20,13 @@ interface ApiReport {
 }
 
 async function request<T>(path: string): Promise<T> {
-  const response = await fetch(`${BASE_URL}${path}`)
+  const inviteCode = sessionStorage.getItem('suhail_invite_code')
+
+  const response = await fetch(`${BASE_URL}${path}`, {
+    headers: inviteCode
+      ? { 'X-Invite-Code': inviteCode }
+      : {},
+  })
 
   if (!response.ok) {
     throw new Error(`خطأ من الخادم: ${response.status}`)
@@ -28,7 +34,6 @@ async function request<T>(path: string): Promise<T> {
 
   return response.json() as Promise<T>
 }
-
 function mapReport(item: ApiReport): Report {
   return {
     id: item.report_id,
@@ -67,9 +72,44 @@ export const api = {
 
   stats: () => request<Stats>('/stats'),
 
-  analyze: async (_file: File, _onProgress: (value: number) => void): Promise<Report> => {
-    throw new Error('رفع الملفات والتحليل غير متوفرين في الخادم حاليًا.')
-  },
+analyze: async (file: File, onProgress: (value: number) => void): Promise<Report> => {
+  const inviteCode = sessionStorage.getItem('suhail_invite_code')
+  if (!inviteCode) throw new Error('أدخلي رمز الدعوة أولاً.')
+
+  const data = new FormData()
+  data.append('file', file)
+
+  onProgress(30)
+
+  const response = await fetch(`${BASE_URL}/upload`, {
+    method: 'POST',
+    headers: { 'X-Invite-Code': inviteCode },
+    body: data,
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}))
+    throw new Error(error.detail || `خطأ من الخادم: ${response.status}`)
+  }
+
+  const result = await response.json()
+  onProgress(100)
+
+  return {
+    id: result.report_id,
+    filename: result.filename,
+    media_type: result.media_type,
+    created_at: null,
+    verdict: null,
+    authenticity_score: null,
+    certainty: null,
+    status: result.job_status,
+    reasons: [],
+    recommendations: [],
+    segments: [],
+    model_version: null,
+  }
+},
 
   feedback: async (_data: unknown): Promise<never> => {
     throw new Error('نموذج التقييم يحتاج ربطًا بمسار قرار الصحفي في الخادم.')

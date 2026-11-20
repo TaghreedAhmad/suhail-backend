@@ -1,6 +1,12 @@
 
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy.orm import Session
+from .auth import verify_invite_code
+import os
+import uuid
+from pathlib import Path
+
+from fastapi import UploadFile, File
 
 from . import models
 from .database import Base, engine, get_db
@@ -15,12 +21,129 @@ app = FastAPI(
     version="0.1.0",
 )
 
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+
+ALLOWED_MEDIA_TYPES = {
+    "image/jpeg": "image",
+    "image/png": "image",
+    "image/webp": "image",
+    "video/mp4": "video",
+    "video/webm": "video",
+    "audio/mpeg": "audio",
+    "audio/wav": "audio",
+    "audio/ogg": "audio",
+}
+
+async def save_upload(file: UploadFile) -> tuple[str, int]:
+    extension = Path(file.filename or "").suffix.lower()
+
+    if file.content_type not in ALLOWED_MEDIA_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail="نوع الملف غير مدعوم",
+        )
+
+    allowed_extensions = {
+        "image/jpeg": {".jpg", ".jpeg"},
+        "image/png": {".png"},
+        "image/webp": {".webp"},
+        "video/mp4": {".mp4"},
+        "video/webm": {".webm"},
+        "audio/mpeg": {".mp3"},
+        "audio/wav": {".wav"},
+        "audio/ogg": {".ogg"},
+    }
+
+    if extension not in allowed_extensions[file.content_type]:
+        raise HTTPException(
+            status_code=415,
+            detail="امتداد الملف لا يتوافق مع نوعه",
+        )
+
+    filename = f"{uuid.uuid4().hex}{extension}"
+    destination = UPLOAD_DIR / filename
+    total_size = 0
+
+    try:
+        with destination.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                total_size += len(chunk)
+
+                if total_size > MAX_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="حجم الملف يتجاوز الحد المسموح (100MB)",
+                    )
+
+                output.write(chunk)
+
+        if total_size == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="الملف فارغ",
+            )
+
+        return str(destination), total_size
+
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+
+    finally:
+        await file.close()
+
+
+@app.post("/upload", status_code=201)
+async def upload_clip(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    invite_code: str = Depends(verify_invite_code),
+):
+    storage_path, file_size = await save_upload(file)
+
+    try:
+        clip = models.Clip(
+            filename=Path(file.filename or "unknown").name,
+            storage_path=storage_path,
+            media_type=ALLOWED_MEDIA_TYPES[file.content_type],
+            file_size=file_size,
+        )
+
+        db.add(clip)
+        db.flush()
+
+        report = models.Report(
+            clip_id=clip.id,
+            job_status="queued",
+        )
+
+        db.add(report)
+        db.commit()
+        db.refresh(report)
+
+        return {
+            "report_id": report.id,
+            "clip_id": clip.id,
+            "filename": clip.filename,
+            "media_type": clip.media_type,
+            "file_size": clip.file_size,
+            "job_status": report.job_status,
+            "is_demo": False,
+        }
+
+    except Exception:
+        db.rollback()
+        Path(storage_path).unlink(missing_ok=True)
+        raise
 
 def fixture_response(fixture):
     return {
         **fixture,
         "filename": f'{fixture["clip_id"]}.mock',
-        "media_type": "unknown",
+        "media_type": fixture.get("media_type", "unknown"),
         "created_at": None,
         "is_demo": True,
     }
@@ -33,7 +156,7 @@ def database_report_response(report, db):
         "report_id": report.id,
         "clip_id": report.clip_id,
         "filename": clip.filename if clip else "غير معروف",
-        "media_type": "unknown",
+        "media_type": clip.media_type if clip and clip.media_type else "unknown",
         "created_at": report.created_at,
         "is_demo": False,
         "job_status": report.job_status,
@@ -55,7 +178,9 @@ def health():
 
 
 @app.get("/fixtures")
-def get_fixtures():
+def get_fixtures(
+    invite_code: str = Depends(verify_invite_code),
+):
     fixtures = {
         key: fixture_response(value)
         for key, value in FIXTURES.items()
@@ -64,7 +189,10 @@ def get_fixtures():
 
 
 @app.get("/reports", response_model=list[ReportResponse])
-def get_reports(db: Session = Depends(get_db)):
+def get_reports(
+    db: Session = Depends(get_db),
+    invite_code: str = Depends(verify_invite_code),
+):
     demo_ids = {item["report_id"] for item in FIXTURES.values()}
 
     results = [
@@ -84,7 +212,10 @@ def get_reports(db: Session = Depends(get_db)):
 
 
 @app.get("/stats")
-def get_stats(db: Session = Depends(get_db)):
+def get_stats(
+    db: Session = Depends(get_db),
+    invite_code: str = Depends(verify_invite_code),
+):
     demo_ids = {item["report_id"] for item in FIXTURES.values()}
     reports = db.query(models.Report).all()
 
@@ -116,7 +247,11 @@ def get_stats(db: Session = Depends(get_db)):
 
 
 @app.get("/reports/{report_id}", response_model=ReportResponse)
-def get_report(report_id: str, db: Session = Depends(get_db)):
+def get_report(
+    report_id: str,
+    db: Session = Depends(get_db),
+    invite_code: str = Depends(verify_invite_code),
+):
     for fixture in FIXTURES.values():
         if fixture["report_id"] == report_id:
             return fixture_response(fixture)
@@ -133,6 +268,7 @@ def get_report(report_id: str, db: Session = Depends(get_db)):
 def create_feedback(
     payload: FeedbackCreate,
     db: Session = Depends(get_db),
+    invite_code: str = Depends(verify_invite_code),
 ):
     report = db.get(models.Report, payload.report_id)
 

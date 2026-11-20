@@ -24,6 +24,9 @@ class Clip(Base):
     # الجواب المعروف مسبقاً للمقاطع التجريبية: real | fake | out_of_context
     ground_truth: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    storage_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    media_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Report(Base):
