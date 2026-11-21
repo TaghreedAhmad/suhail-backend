@@ -1,5 +1,6 @@
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from .auth import verify_invite_code
 import os
@@ -19,6 +20,16 @@ app = FastAPI(
     title="Suhail API",
     description="Arabic AI-assisted journalism verification API",
     version="0.1.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://ideal-guide-96x47w5jq6qj3r6g-5176.app.github.dev",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 UPLOAD_DIR = Path("uploads")
